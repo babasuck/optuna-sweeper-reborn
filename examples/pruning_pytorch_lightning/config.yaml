@@ -1,0 +1,26 @@
+defaults:
+  - override /hydra/sweeper: optuna_reborn
+
+lr: 0.001
+weight_decay: 0.0001
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    direction: minimize
+    storage: "sqlite:///optuna_pl_demo.db"
+    study_name: pl-pruning-demo
+    n_trials: 20
+    n_jobs: 1
+    enable_pruning: true
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: 42
+      n_startup_trials: 5
+    pruner:
+      _target_: optuna.pruners.MedianPruner
+      n_startup_trials: 3
+      n_warmup_steps: 2
+    params:
+      lr: tag(log, interval(0.0001, 0.1))
+      weight_decay: tag(log, interval(0.00001, 0.01))

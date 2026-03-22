@@ -1,0 +1,26 @@
+defaults:
+  - override /hydra/sweeper: optuna_reborn
+
+x: 0.0
+y: 0.0
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    direction: minimize
+    storage: "sqlite:///optuna_dashboard_demo.db"
+    study_name: dashboard-demo
+    n_trials: 30
+    n_jobs: 1
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      seed: 42
+    dashboard:
+      enabled: true
+      host: localhost
+      port: 8080
+    callbacks:
+      - _target_: hydra_plugins.hydra_optuna_sweeper_reborn._callbacks.BestTrialCallback
+    params:
+      x: interval(-5.0, 5.0)
+      y: interval(-5.0, 5.0)
