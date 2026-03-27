@@ -25,7 +25,6 @@ from ._distributions import (
     create_optuna_distribution_from_config,
     create_params_from_overrides,
 )
-from ._trial_provider import clear_current_trial, set_current_trial
 from .config import Direction
 
 log = logging.getLogger(__name__)
@@ -361,7 +360,7 @@ class OptunaSweeperImpl(Sweeper):
                 trials, search_space_distributions, fixed_params
             )
 
-            # Inject trial metadata via env vars for remote workers
+            # Inject trial metadata via env vars for remote/local workers
             enriched_overrides = []
             for trial, trial_overrides in zip(trials, overrides):
                 env_overrides = list(trial_overrides) + [
@@ -369,15 +368,12 @@ class OptunaSweeperImpl(Sweeper):
                     f"+hydra.job.env_set.OPTUNA_STUDY_NAME={study.study_name}",
                     f"+hydra.job.env_set.OPTUNA_STORAGE={self.storage or ''}",
                 ]
-                # Also set thread-local for BasicLauncher (same process)
-                set_current_trial(trial)
                 enriched_overrides.append(tuple(env_overrides))
 
             returns = self.launcher.launch(
                 enriched_overrides, initial_job_idx=self.job_idx
             )
             self.job_idx += len(returns)
-            clear_current_trial()
 
             failures = []
             for trial, ret in zip(trials, returns):

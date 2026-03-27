@@ -7,6 +7,7 @@ from optuna.trial import Trial
 
 _thread_local = threading.local()
 _remote_trial_cache: Optional[Trial] = None
+_remote_trial_cache_id: Optional[str] = None
 
 log = logging.getLogger(__name__)
 
@@ -45,36 +46,39 @@ def get_current_trial() -> Optional[Trial]:
         return trial
 
     # 2. Remote reconstruction from env vars (works with Ray/distributed)
-    global _remote_trial_cache
-    if _remote_trial_cache is not None:
-        return _remote_trial_cache
-
     trial_id_str = os.environ.get("OPTUNA_TRIAL_ID")
     study_name = os.environ.get("OPTUNA_STUDY_NAME")
     storage_url = os.environ.get("OPTUNA_STORAGE")
 
-    if trial_id_str is not None and study_name and storage_url:
-        try:
-            import optuna
+    if trial_id_str is None or not study_name or not storage_url:
+        return None
 
-            study = optuna.load_study(study_name=study_name, storage=storage_url)
-            trial_id = int(trial_id_str)
-            remote_trial = Trial(study, trial_id)
-            _remote_trial_cache = remote_trial
-            log.debug(
-                f"Reconstructed trial {trial_id} from storage "
-                f"(study={study_name}, storage={storage_url})"
-            )
-            return remote_trial
-        except Exception as e:
-            log.warning(f"Failed to reconstruct trial from env vars: {e}")
-            return None
+    # Return cached trial if it matches current env vars
+    global _remote_trial_cache, _remote_trial_cache_id
+    if _remote_trial_cache is not None and _remote_trial_cache_id == trial_id_str:
+        return _remote_trial_cache
 
-    return None
+    try:
+        import optuna
+
+        study = optuna.load_study(study_name=study_name, storage=storage_url)
+        trial_id = int(trial_id_str)
+        remote_trial = Trial(study, trial_id)
+        _remote_trial_cache = remote_trial
+        _remote_trial_cache_id = trial_id_str
+        log.debug(
+            f"Reconstructed trial {trial_id} from storage "
+            f"(study={study_name}, storage={storage_url})"
+        )
+        return remote_trial
+    except Exception as e:
+        log.warning(f"Failed to reconstruct trial from env vars: {e}")
+        return None
 
 
 def clear_current_trial() -> None:
     """Clear the current trial. Called by the sweeper after job completion."""
-    global _remote_trial_cache
+    global _remote_trial_cache, _remote_trial_cache_id
     _thread_local.current_trial = None
     _remote_trial_cache = None
+    _remote_trial_cache_id = None
