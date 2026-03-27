@@ -365,9 +365,9 @@ class OptunaSweeperImpl(Sweeper):
             enriched_overrides = []
             for trial, trial_overrides in zip(trials, overrides):
                 env_overrides = list(trial_overrides) + [
-                    f"hydra.job.env_set.OPTUNA_TRIAL_ID={trial._trial_id}",
-                    f"hydra.job.env_set.OPTUNA_STUDY_NAME={study.study_name}",
-                    f"hydra.job.env_set.OPTUNA_STORAGE={self.storage or ''}",
+                    f"+hydra.job.env_set.OPTUNA_TRIAL_ID={trial._trial_id}",
+                    f"+hydra.job.env_set.OPTUNA_STUDY_NAME={study.study_name}",
+                    f"+hydra.job.env_set.OPTUNA_STORAGE={self.storage or ''}",
                 ]
                 # Also set thread-local for BasicLauncher (same process)
                 set_current_trial(trial)
