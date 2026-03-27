@@ -304,6 +304,44 @@ All other config fields (`sampler`, `direction`, `storage`, `study_name`, `n_tri
 
 ---
 
+## Pruning with Ray Launcher (distributed)
+
+Pruning works with any Hydra launcher, including Ray. The sweeper injects trial metadata (`OPTUNA_TRIAL_ID`, `OPTUNA_STUDY_NAME`, `OPTUNA_STORAGE`) via `hydra.job.env_set` so remote workers can reconstruct the Trial object from shared storage.
+
+```yaml
+defaults:
+  - override /hydra/sweeper: optuna_reborn
+  - override /hydra/launcher: ray
+
+hydra:
+  launcher:
+    ray:
+      init:
+        num_gpus: 4
+      remote:
+        num_gpus: 1
+        max_calls: 1
+  sweeper:
+    direction: maximize
+    storage: "sqlite:///optuna_result/optuna.db"
+    study_name: my-study
+    n_trials: 80
+    n_jobs: 4
+    enable_pruning: true
+    pruner:
+      _target_: optuna.pruners.MedianPruner
+      n_startup_trials: 5
+      n_warmup_steps: 3
+    params:
+      lr: tag(log, interval(0.00001, 0.1))
+```
+
+**Requirements for distributed pruning:**
+- `storage` must be configured (SQLite or PostgreSQL) — required for trial reconstruction on remote workers
+- `get_current_trial()` automatically falls back to env vars when thread-local is unavailable
+
+---
+
 ## Examples
 
 See the [`examples/`](examples/) directory:
