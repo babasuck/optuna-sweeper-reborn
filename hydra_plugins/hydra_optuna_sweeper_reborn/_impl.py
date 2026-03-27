@@ -336,56 +336,107 @@ class OptunaSweeperImpl(Sweeper):
         directions: List[str],
         callbacks: List[Callable],
     ) -> None:
-        """Sweep with pruning support using study.optimize()."""
+        """Sweep with pruning support using ask/tell pattern.
 
-        def objective(trial: Trial) -> Any:
-            # Set thread-local trial for user code access
-            set_current_trial(trial)
-            try:
-                # Suggest params from search space
-                for param_name, distribution in search_space_distributions.items():
-                    assert type(param_name) is str
-                    trial._suggest(param_name, distribution)
-                for param_name, value in fixed_params.items():
-                    trial.set_user_attr(param_name, value)
+        Supports parallel execution with any launcher (including Ray) by
+        injecting trial metadata via ``hydra.job.env_set`` environment
+        variables. Remote workers reconstruct the Trial object from shared
+        storage to call ``trial.report()`` and ``trial.should_prune()``.
+        """
+        batch_size = self.n_jobs
+        n_trials_to_go = self.n_trials
 
-                if self.custom_search_space_extender:
-                    assert self.config is not None
-                    self.custom_search_space_extender(self.config, trial)
+        if self.storage is None:
+            log.warning(
+                "Pruning with n_jobs > 1 requires persistent storage. "
+                "Falling back to n_jobs=1."
+            )
+            batch_size = 1
 
-                # Build overrides
-                params = dict(trial.params)
-                params.update(fixed_params)
-                overrides = [tuple(f"{name}={val}" for name, val in params.items())]
+        while n_trials_to_go > 0:
+            batch_size = min(n_trials_to_go, batch_size)
 
-                # Launch single job
-                returns = self.launcher.launch(
-                    overrides, initial_job_idx=self.job_idx
+            trials = [study.ask() for _ in range(batch_size)]
+            overrides = self._configure_trials(
+                trials, search_space_distributions, fixed_params
+            )
+
+            # Inject trial metadata via env vars for remote workers
+            enriched_overrides = []
+            for trial, trial_overrides in zip(trials, overrides):
+                env_overrides = list(trial_overrides) + [
+                    f"hydra.job.env_set.OPTUNA_TRIAL_ID={trial._trial_id}",
+                    f"hydra.job.env_set.OPTUNA_STUDY_NAME={study.study_name}",
+                    f"hydra.job.env_set.OPTUNA_STORAGE={self.storage or ''}",
+                ]
+                # Also set thread-local for BasicLauncher (same process)
+                set_current_trial(trial)
+                enriched_overrides.append(tuple(env_overrides))
+
+            returns = self.launcher.launch(
+                enriched_overrides, initial_job_idx=self.job_idx
+            )
+            self.job_idx += len(returns)
+            clear_current_trial()
+
+            failures = []
+            for trial, ret in zip(trials, returns):
+                values: Optional[List[float]] = None
+                state: optuna.trial.TrialState = optuna.trial.TrialState.COMPLETE
+                try:
+                    ret_value = ret.return_value
+
+                    if ret_value is None:
+                        state = optuna.trial.TrialState.PRUNED
+                    elif len(directions) == 1:
+                        try:
+                            values = [float(ret_value)]
+                        except (ValueError, TypeError):
+                            raise ValueError(
+                                f"Return value must be float-castable. Got '{ret_value}'."
+                            ).with_traceback(sys.exc_info()[2])
+                    else:
+                        try:
+                            values = [float(v) for v in ret_value]
+                        except (ValueError, TypeError):
+                            raise ValueError(
+                                "Return value must be a list or tuple of float-castable "
+                                f"values. Got '{ret_value}'."
+                            ).with_traceback(sys.exc_info()[2])
+
+                    study.tell(trial=trial, state=state, values=values)
+
+                except optuna.TrialPruned:
+                    study.tell(
+                        trial=trial,
+                        state=optuna.trial.TrialState.PRUNED,
+                    )
+                    log.info(f"Trial {trial.number} was pruned.")
+                except Exception as e:
+                    state = optuna.trial.TrialState.FAIL
+                    study.tell(trial=trial, state=state, values=values)
+                    log.warning(f"Failed experiment: {e}")
+                    failures.append(e)
+
+                # Invoke callbacks
+                frozen_trial = study.trials[-1]
+                for cb in callbacks:
+                    try:
+                        cb(study, frozen_trial)
+                    except Exception as cb_err:
+                        log.warning(f"Callback error: {cb_err}")
+
+            # Raise if too many failures
+            if len(failures) / len(returns) > self.max_failure_rate:
+                log.error(
+                    f"Failed {len(failures)} times out of {len(returns)} "
+                    f"with max_failure_rate={self.max_failure_rate}."
                 )
-                self.job_idx += len(returns)
+                assert len(failures) > 0
+                for ret in returns:
+                    ret.return_value  # delegate raising to JobReturn
 
-                ret = returns[0]
-                ret_value = ret.return_value
-
-                if ret_value is None:
-                    raise optuna.TrialPruned()
-
-                if len(directions) == 1:
-                    return float(ret_value)
-                else:
-                    return [float(v) for v in ret_value]
-
-            except optuna.TrialPruned:
-                raise
-            finally:
-                clear_current_trial()
-
-        study.optimize(
-            objective,
-            n_trials=self.n_trials,
-            n_jobs=1,  # parallelism via separate processes against shared storage
-            callbacks=callbacks,
-        )
+            n_trials_to_go -= batch_size
 
     def sweep(self, arguments: List[str]) -> None:
         assert self.config is not None
@@ -451,7 +502,10 @@ class OptunaSweeperImpl(Sweeper):
         if pruner is not None:
             log.info(f"Pruner: {type(pruner).__name__}")
         if self.enable_pruning:
-            log.info("Pruning mode: ENABLED (trial accessible via get_current_trial())")
+            log.info(
+                f"Pruning mode: ENABLED (n_jobs={self.n_jobs}, "
+                f"trial accessible via get_current_trial())"
+            )
 
         # Build callbacks
         callbacks = self._build_callbacks()
