@@ -4,9 +4,6 @@ import os
 import subprocess
 import sys
 
-import pytest
-
-
 EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "..", "examples")
 PYTHON = sys.executable
 

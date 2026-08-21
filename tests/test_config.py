@@ -1,6 +1,4 @@
 from hydra.core.config_store import ConfigStore
-from omegaconf import OmegaConf
-
 from hydra_plugins.hydra_optuna_sweeper_reborn.config import (
     BruteForceSamplerConfig,
     CmaEsSamplerConfig,

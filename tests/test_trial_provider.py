@@ -2,12 +2,21 @@ import os
 import threading
 
 import optuna
-import pytest
 
 from hydra_plugins.hydra_optuna_sweeper_reborn._trial_provider import (
     clear_current_trial,
+    deserialize_pruner,
     get_current_trial,
+    serialize_pruner,
     set_current_trial,
+)
+
+
+REMOTE_ENV_VARS = (
+    "OPTUNA_TRIAL_ID",
+    "OPTUNA_STUDY_NAME",
+    "OPTUNA_STORAGE",
+    "OPTUNA_PRUNER",
 )
 
 
@@ -56,13 +65,21 @@ class TestTrialProviderEnvVarFallback:
     def setup_method(self):
         clear_current_trial()
         # Clean env vars
-        for key in ("OPTUNA_TRIAL_ID", "OPTUNA_STUDY_NAME", "OPTUNA_STORAGE"):
+        for key in REMOTE_ENV_VARS:
             os.environ.pop(key, None)
 
     def teardown_method(self):
         clear_current_trial()
-        for key in ("OPTUNA_TRIAL_ID", "OPTUNA_STUDY_NAME", "OPTUNA_STORAGE"):
+        for key in REMOTE_ENV_VARS:
             os.environ.pop(key, None)
+
+    @staticmethod
+    def _set_remote_trial_env(study, trial, storage_url, pruner=None):
+        os.environ["OPTUNA_TRIAL_ID"] = str(trial._trial_id)
+        os.environ["OPTUNA_STUDY_NAME"] = study.study_name
+        os.environ["OPTUNA_STORAGE"] = storage_url
+        if pruner is not None:
+            os.environ["OPTUNA_PRUNER"] = serialize_pruner(pruner)
 
     def test_no_env_vars_returns_none(self):
         assert get_current_trial() is None
@@ -78,9 +95,7 @@ class TestTrialProviderEnvVarFallback:
         study = optuna.create_study(study_name="test-env", storage=storage_url)
         trial = study.ask()
 
-        os.environ["OPTUNA_TRIAL_ID"] = str(trial._trial_id)
-        os.environ["OPTUNA_STUDY_NAME"] = "test-env"
-        os.environ["OPTUNA_STORAGE"] = storage_url
+        self._set_remote_trial_env(study, trial, storage_url)
 
         reconstructed = get_current_trial()
         assert reconstructed is not None
@@ -105,9 +120,7 @@ class TestTrialProviderEnvVarFallback:
         )
         trial = study.ask()
 
-        os.environ["OPTUNA_TRIAL_ID"] = str(trial._trial_id)
-        os.environ["OPTUNA_STUDY_NAME"] = "test-prune"
-        os.environ["OPTUNA_STORAGE"] = storage_url
+        self._set_remote_trial_env(study, trial, storage_url, study.pruner)
 
         reconstructed = get_current_trial()
         reconstructed.report(0.5, step=0)
@@ -115,15 +128,68 @@ class TestTrialProviderEnvVarFallback:
         # NopPruner never prunes
         assert reconstructed.should_prune() is False
 
+    def test_configured_median_pruner_is_preserved_on_remote_worker(self, tmp_path):
+        """Remote workers must not fall back to MedianPruner(5, 0)."""
+        storage_url = f"sqlite:///{tmp_path}/test_median_pruner.db"
+        pruner = optuna.pruners.MedianPruner(
+            n_startup_trials=20,
+            n_warmup_steps=5,
+            interval_steps=1,
+        )
+        study = optuna.create_study(
+            study_name="test-median-pruner",
+            storage=storage_url,
+            direction="maximize",
+            pruner=pruner,
+        )
+
+        # Five completed trials are enough for Optuna's default MedianPruner to
+        # prune at step 0, but not for the configured 20-trial/5-step warmup.
+        for _ in range(5):
+            baseline = study.ask()
+            baseline.report(1.0, step=0)
+            baseline.report(1.0, step=5)
+            study.tell(baseline, 1.0)
+
+        trial = study.ask()
+        self._set_remote_trial_env(study, trial, storage_url, pruner)
+
+        reconstructed = get_current_trial()
+        reconstructed.report(0.0, step=0)
+
+        assert reconstructed.should_prune() is False
+
+        # Once 20 trials and five warmup steps are available, the same poor
+        # trial should become eligible for pruning.
+        for _ in range(15):
+            baseline = study.ask()
+            baseline.report(1.0, step=0)
+            baseline.report(1.0, step=5)
+            study.tell(baseline, 1.0)
+
+        reconstructed.report(0.0, step=5)
+
+        assert bool(reconstructed.should_prune()) is True
+
+    def test_pruner_serialization_roundtrip(self):
+        pruner = optuna.pruners.MedianPruner(
+            n_startup_trials=20,
+            n_warmup_steps=5,
+        )
+
+        restored = deserialize_pruner(serialize_pruner(pruner))
+
+        assert isinstance(restored, optuna.pruners.MedianPruner)
+        assert restored._n_startup_trials == 20
+        assert restored._n_warmup_steps == 5
+
     def test_thread_local_takes_precedence_over_env(self, tmp_path):
         """Thread-local trial should take precedence over env vars."""
         storage_url = f"sqlite:///{tmp_path}/test_precedence.db"
         study = optuna.create_study(study_name="test-prec", storage=storage_url)
         trial = study.ask()
 
-        os.environ["OPTUNA_TRIAL_ID"] = str(trial._trial_id)
-        os.environ["OPTUNA_STUDY_NAME"] = "test-prec"
-        os.environ["OPTUNA_STORAGE"] = storage_url
+        self._set_remote_trial_env(study, trial, storage_url)
 
         sentinel = object()
         set_current_trial(sentinel)

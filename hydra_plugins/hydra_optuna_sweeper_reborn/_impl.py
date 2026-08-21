@@ -3,7 +3,7 @@ import logging
 import sys
 import warnings
 from textwrap import dedent
-from typing import Any, Callable, Dict, List, MutableSequence, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, MutableSequence, Optional, Sequence
 
 import optuna
 from hydra._internal.deprecation_warning import deprecation_warning
@@ -20,11 +20,11 @@ from optuna.distributions import (
 )
 from optuna.trial import Trial
 
-from ._callbacks import BestTrialCallback, LogProgressCallback
 from ._distributions import (
     create_optuna_distribution_from_config,
     create_params_from_overrides,
 )
+from ._trial_provider import clear_current_trial, serialize_pruner, set_current_trial
 from .config import Direction
 
 log = logging.getLogger(__name__)
@@ -352,6 +352,11 @@ class OptunaSweeperImpl(Sweeper):
             )
             batch_size = 1
 
+        # Optuna does not persist the pruner in RDB storage. Remote workers must
+        # receive the controller's configured pruner explicitly; otherwise
+        # optuna.load_study() silently creates MedianPruner with its defaults.
+        pruner_payload = serialize_pruner(study.pruner)
+
         while n_trials_to_go > 0:
             batch_size = min(n_trials_to_go, batch_size)
 
@@ -367,12 +372,22 @@ class OptunaSweeperImpl(Sweeper):
                     f"+hydra.job.env_set.OPTUNA_TRIAL_ID={trial._trial_id}",
                     f"+hydra.job.env_set.OPTUNA_STUDY_NAME={study.study_name}",
                     f"+hydra.job.env_set.OPTUNA_STORAGE={self.storage or ''}",
+                    f"+hydra.job.env_set.OPTUNA_PRUNER={pruner_payload}",
                 ]
                 enriched_overrides.append(tuple(env_overrides))
 
-            returns = self.launcher.launch(
-                enriched_overrides, initial_job_idx=self.job_idx
-            )
+            # Without persistent storage a local launcher cannot reconstruct the
+            # trial from environment variables. Expose the single active trial
+            # through thread-local state instead.
+            if self.storage is None:
+                set_current_trial(trials[0])
+            try:
+                returns = self.launcher.launch(
+                    enriched_overrides, initial_job_idx=self.job_idx
+                )
+            finally:
+                if self.storage is None:
+                    clear_current_trial()
             self.job_idx += len(returns)
 
             failures = []
