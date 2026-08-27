@@ -10,9 +10,8 @@ import hydra
 import lightning as L
 import torch
 from omegaconf import DictConfig
-from torch.utils.data import DataLoader, TensorDataset
-
 from optuna_pruning_callback import OptunaPruningCallback
+from torch.utils.data import DataLoader, TensorDataset
 
 
 class Regressor(L.LightningModule):

@@ -65,9 +65,11 @@ hydra:
 import hydra
 from omegaconf import DictConfig
 
+
 @hydra.main(version_base="1.3", config_path=".", config_name="config")
 def main(cfg: DictConfig) -> float:
-    return cfg.x ** 2 + cfg.y ** 2
+    return cfg.x**2 + cfg.y**2
+
 
 if __name__ == "__main__":
     main()
@@ -237,7 +239,34 @@ hydra:
       port: 8080
     callbacks:                   # list of callbacks via _target_
       - _target_: hydra_plugins.hydra_optuna_sweeper_reborn._callbacks.BestTrialCallback
+
+    enqueue:                     # warm start: try these before sampling begins
+      - {lr: 0.003, weight_decay: 0.0001}
+      - {lr: 0.05}               # partial — weight_decay is still sampled
+    results_top_n: 5             # trials listed in optimization_results.yaml (0 = none)
 ```
+
+Entries in `enqueue` are skipped if a resumed study already contains that point,
+so restarting a long study does not keep re-running the same configurations.
+
+### Results
+
+`optimization_results.yaml` keeps `name` / `best_params` / `best_value` (or
+`solutions` for multi-objective) and adds a summary:
+
+```yaml
+best_value: 0.4615
+top:
+  - {number: 11, value: 0.4615, params: {lr: 0.0775, weight_decay: 0.000188}}
+study_name: feat
+trials: {total: 12, complete: 6, pruned: 6}
+elapsed: 8s
+worker_time: 4s      # summed worker_start/worker_end, excludes the batch barrier
+```
+
+`worker_time` appears only when workers recorded their own timings (pruning mode
+with storage). Comparing it against `elapsed` tells you how much of the wall clock
+actually went into training — see Gotchas.
 
 ### Available samplers (via defaults)
 

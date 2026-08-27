@@ -1,7 +1,7 @@
 """Pruning example: simulated training loop with intermediate reports."""
 
-import optuna
 import hydra
+import optuna
 from omegaconf import DictConfig
 
 from hydra_plugins.hydra_optuna_sweeper_reborn import get_current_trial

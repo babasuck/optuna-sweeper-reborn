@@ -1,13 +1,11 @@
 """Multi-objective example: minimize two conflicting objectives."""
 
-from typing import List
-
 import hydra
 from omegaconf import DictConfig
 
 
 @hydra.main(version_base="1.3", config_path=".", config_name="config")
-def main(cfg: DictConfig) -> List[float]:
+def main(cfg: DictConfig) -> list[float]:
     x: float = cfg.x
     y: float = cfg.y
     # Two conflicting objectives (ZDT1-like)
