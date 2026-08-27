@@ -15,20 +15,16 @@ class LogProgressCallback:
     def __call__(self, study: Study, trial: FrozenTrial) -> None:
         if trial.number % self.log_interval != 0:
             return
-        n_complete = len(
-            [t for t in study.trials if t.state == TrialState.COMPLETE]
-        )
-        n_pruned = len(
-            [t for t in study.trials if t.state == TrialState.PRUNED]
-        )
-        n_fail = len(
-            [t for t in study.trials if t.state == TrialState.FAIL]
-        )
+        trials = study.get_trials(deepcopy=False)
+        n_complete = len([t for t in trials if t.state == TrialState.COMPLETE])
+        n_pruned = len([t for t in trials if t.state == TrialState.PRUNED])
+        n_fail = len([t for t in trials if t.state == TrialState.FAIL])
         best_str = "N/A"
         if n_complete > 0:
             try:
                 best_str = str(study.best_value)
-            except ValueError:
+            except (ValueError, RuntimeError):
+                # RuntimeError: multi-objective study has no single best value.
                 best_str = "N/A (multi-objective)"
         log.info(
             f"Trial {trial.number} finished. "
@@ -54,5 +50,7 @@ class BestTrialCallback:
                     f"New best trial! Number: {study.best_trial.number}, "
                     f"Value: {current_best}, Params: {study.best_trial.params}"
                 )
-        except ValueError:
+        except (ValueError, RuntimeError):
+            # ValueError: no completed trials yet.
+            # RuntimeError: multi-objective study, `best_value` is undefined.
             pass

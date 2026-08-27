@@ -23,9 +23,19 @@ class DashboardManager:
                     "--port",
                     str(self.port),
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                # DEVNULL, not PIPE: nothing ever drains these, and the dashboard
+                # writes an access log line per request, so a PIPE fills up and
+                # deadlocks the dashboard partway through a long sweep.
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
+            if self._process.poll() is not None:
+                log.warning(
+                    f"optuna-dashboard exited immediately (code "
+                    f"{self._process.returncode}); port {self.port} may be in use."
+                )
+                self._process = None
+                return
             log.info(
                 f"Optuna Dashboard started at http://{self.host}:{self.port}/"
             )
