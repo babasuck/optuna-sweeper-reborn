@@ -32,7 +32,9 @@ class OptunaPruningCallback(Callback):
         self._trial = get_current_trial()
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        if self._trial is None:
+        if self._trial is None or trainer.sanity_checking:
+            # The sanity-check pass runs before training and would report an
+            # untrained loss at step 0.
             return
 
         current_value = trainer.callback_metrics.get(self.monitor)
@@ -40,9 +42,10 @@ class OptunaPruningCallback(Callback):
             return
 
         epoch = trainer.current_epoch
-        self._trial.report(current_value.item(), epoch)
+        value = current_value.item()
+        self._trial.report(value, epoch)
 
         if self._trial.should_prune():
             raise optuna.TrialPruned(
-                f"Trial pruned at epoch {epoch} with {self.monitor}={current_value:.4f}"
+                f"Trial pruned at epoch {epoch} with {self.monitor}={value:.4f}"
             )

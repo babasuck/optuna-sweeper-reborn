@@ -213,12 +213,13 @@ hydra:
     storage: null                # e.g. "sqlite:///optuna.db"
     study_name: null             # name for persistent studies
     n_trials: 20                 # total number of trials
-    n_jobs: 2                    # parallel workers per batch
+    n_jobs: 2                    # ask/tell batch size (see Gotchas)
     max_failure_rate: 0.0        # 0.0 to 1.0
 
     sampler:                     # any Optuna sampler via _target_
       _target_: optuna.samplers.TPESampler
       seed: 42
+      constant_liar: true        # set this whenever n_jobs > 1
 
     params:                      # search space
       lr: tag(log, interval(0.00001, 0.1))
@@ -256,7 +257,9 @@ Override with `- override /hydra/sweeper/sampler: <name>`:
 
 ### Available pruners
 
-Specify via `_target_` in the `pruner` config block:
+Select with `- override /hydra/sweeper/pruner: <name>` (`median`, `hyperband`,
+`percentile`, `threshold`, `patient`, `successive_halving`, `nop`), or spell it out
+via `_target_` in the `pruner` config block:
 
 | Pruner | `_target_` |
 |---|---|
@@ -306,7 +309,7 @@ All other config fields (`sampler`, `direction`, `storage`, `study_name`, `n_tri
 
 ## Pruning with Ray Launcher (distributed)
 
-Pruning works with any Hydra launcher, including Ray. The sweeper injects trial metadata (`OPTUNA_TRIAL_ID`, `OPTUNA_STUDY_NAME`, `OPTUNA_STORAGE`) and the configured pruner (`OPTUNA_PRUNER`) via `hydra.job.env_set` so remote workers can reconstruct the Trial object from shared storage without falling back to Optuna's default pruner.
+Pruning works with any Hydra launcher, including Ray. The sweeper injects trial identity (`OPTUNA_TRIAL_ID`, `OPTUNA_STUDY_NAME`, `OPTUNA_STORAGE`) via `hydra.job.env_set`, and stores the pruner config in the study itself, so remote workers reconstruct the Trial from shared storage with the pruner you configured — not Optuna's default.
 
 ```yaml
 defaults:
@@ -326,8 +329,11 @@ hydra:
     storage: "sqlite:///optuna_result/optuna.db"
     study_name: my-study
     n_trials: 80
-    n_jobs: 4
+    n_jobs: 8                    # above the 4 GPU slots on purpose — see Gotchas
     enable_pruning: true
+    sampler:
+      _target_: optuna.samplers.TPESampler
+      constant_liar: true        # required for sane batched sampling
     pruner:
       _target_: optuna.pruners.MedianPruner
       n_startup_trials: 5
@@ -337,8 +343,40 @@ hydra:
 ```
 
 **Requirements for distributed pruning:**
-- `storage` must be configured (SQLite or PostgreSQL) — required for trial reconstruction on remote workers
+- `storage` must be configured — remote workers reconstruct the trial and read the pruner config from it
 - `get_current_trial()` automatically falls back to env vars when thread-local is unavailable
+- single-objective only: Optuna's `Trial.report()`/`should_prune()` do not support multiple directions
+
+---
+
+## Gotchas
+
+Measured on this plugin, not guessed. The sweeper warns you about the first two at startup.
+
+**1. `n_jobs` is the ask/tell batch size, not parallelism.** The launcher decides how many
+jobs actually run at once. All `n_jobs` trials are sampled *before* any of them reports back,
+so without `constant_liar: true` TPE draws the whole batch from one posterior and the points
+collapse together. On a 4D sphere, 40 trials, `n_jobs=2`, 12 seeds: median best value
+**2.400 → 1.155** once `constant_liar` is on. With `n_jobs: 1` none of this applies.
+
+**2. Pruning + batching: the next batch waits for the slowest job of the current one.** A slot
+freed early by pruning sits idle until the batch drains. Measured with real worker timings
+(`n_jobs=2`, one trial pruned at 0.6s next to one running 6.5s): **62.9% slot utilisation**,
+a quarter of the slot-time wasted. Setting `n_jobs` *above* the number of parallel slots lets
+the launcher queue the surplus and amortises the barrier — 74.8% at `n_jobs=4`, 82.8% at 6.
+
+**3. Trial duration in the dashboard includes that wait.** `datetime_start`/`datetime_complete`
+are stamped by the controller in `ask()`/`tell()`, so a pruned trial looks as long as its
+slowest neighbour (3.4× inflation in the run above). For real numbers read the
+`worker_start` / `worker_end` user attributes the sweeper records on each trial.
+
+**4. Storage.** SQLite is fine for one machine. For multi-node runs use PostgreSQL or MySQL —
+per Optuna's docs, `JournalStorage` with a file backend is not recommended over NFS because
+the file locks are unreliable there.
+
+**5. Re-running a persistent study appends.** With the same `study_name` + `storage`,
+`load_if_exists` means a second run adds another `n_trials` on top of the existing ones rather
+than reusing them. Change `study_name` for a clean sweep.
 
 ---
 
@@ -350,7 +388,7 @@ See the [`examples/`](examples/) directory:
 |---|---|
 | [`simple/`](examples/simple/) | Basic sweep, minimize x^2 + y^2 |
 | [`pruning_basic/`](examples/pruning_basic/) | Pruning with MedianPruner |
-| [`pruning_pytorch_lightning/`](examples/pruning_pytorch_lightning/) | PyTorch Lightning + pruning callback |
+| [`pruning_pytorch_lightning/`](examples/pruning_pytorch_lightning/) | PyTorch Lightning + pruning callback (needs `lightning`, `torch`) |
 | [`multi_objective/`](examples/multi_objective/) | Multi-objective with NSGA-II |
 | [`dashboard/`](examples/dashboard/) | Dashboard + BestTrialCallback |
 

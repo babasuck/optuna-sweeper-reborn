@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "..", "examples")
 PYTHON = sys.executable
 
@@ -44,6 +46,7 @@ class TestSweeperIntegration:
         assert "Pareto solutions" in output
 
     def test_pruning_pl_example(self, tmp_path):
+        pytest.importorskip("lightning")
         result, output = _run_example(
             "pruning_pytorch_lightning",
             "train.py",
