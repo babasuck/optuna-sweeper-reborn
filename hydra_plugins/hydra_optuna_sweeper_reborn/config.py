@@ -123,6 +123,9 @@ class QMCSamplerConfig(SamplerConfig):
 @dataclass
 class GridSamplerConfig(SamplerConfig):
     _target_: str = "optuna.samplers.GridSampler"
+    # GridSampler takes `search_space` positionally; the sweeper builds it from
+    # the params config and calls the partial in `sweep()`.
+    _partial_: bool = True
     seed: Optional[int] = None
 
 
@@ -224,8 +227,11 @@ class OptunaSweeperConf:
     _target_: str = (
         "hydra_plugins.hydra_optuna_sweeper_reborn.optuna_sweeper.OptunaSweeper"
     )
+    # `_self_` first so that the sampler/pruner groups override the fields below.
+    # Without it Hydra applies `_self_` last and the `pruner: None` field silently
+    # wipes out whatever `override /hydra/sweeper/pruner: <name>` selected.
     defaults: List[Any] = field(
-        default_factory=lambda: [{"sampler": "tpe"}]
+        default_factory=lambda: ["_self_", {"sampler": "tpe"}, {"pruner": None}]
     )
 
     sampler: Any = MISSING

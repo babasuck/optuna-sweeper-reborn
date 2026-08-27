@@ -161,3 +161,53 @@ class TestConfigStore:
         ]
         for name in expected:
             assert name in items, f"{name} not registered"
+
+
+class TestGroupComposition:
+    """The registered sampler/pruner groups must actually be selectable."""
+
+    @staticmethod
+    def _compose(tmp_path, overrides):
+        from hydra import compose, initialize_config_dir
+
+        (tmp_path / "config.yaml").write_text(
+            "defaults:\n"
+            "  - override /hydra/sweeper: optuna_reborn\n"
+            "x: 0.0\n"
+            "hydra:\n"
+            "  mode: MULTIRUN\n"
+            "  sweeper:\n"
+            "    params:\n"
+            "      x: interval(-1.0, 1.0)\n"
+        )
+        with initialize_config_dir(config_dir=str(tmp_path), version_base="1.3"):
+            return compose(
+                config_name="config", return_hydra_config=True, overrides=overrides
+            )
+
+    def test_pruner_group_override_composes(self, tmp_path):
+        """`override /hydra/sweeper/pruner: median` used to fail with
+        'No match in the defaults list' - the group was registered but unreachable."""
+        cfg = self._compose(tmp_path, ["hydra/sweeper/pruner=median"])
+        assert cfg.hydra.sweeper.pruner._target_ == "optuna.pruners.MedianPruner"
+
+    def test_pruner_defaults_to_none(self, tmp_path):
+        cfg = self._compose(tmp_path, [])
+        assert cfg.hydra.sweeper.pruner is None
+
+    def test_sampler_group_still_composes(self, tmp_path):
+        cfg = self._compose(tmp_path, ["hydra/sweeper/sampler=nsgaii"])
+        assert cfg.hydra.sweeper.sampler._target_ == "optuna.samplers.NSGAIISampler"
+
+    def test_grid_sampler_instantiates(self):
+        """GridSampler takes `search_space` positionally, so its config must be
+        partial - otherwise instantiation raises TypeError."""
+        import functools
+
+        import optuna
+        from hydra.utils import instantiate
+        from omegaconf import OmegaConf
+
+        sampler = instantiate(OmegaConf.structured(GridSamplerConfig()))
+        assert isinstance(sampler, functools.partial)
+        assert isinstance(sampler({"x": [1, 2, 3]}), optuna.samplers.GridSampler)
