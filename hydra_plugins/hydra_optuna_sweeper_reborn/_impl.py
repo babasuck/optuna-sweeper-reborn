@@ -2,9 +2,13 @@ import functools
 import json
 import logging
 import sys
+import time
 import warnings
+from collections import Counter
+from collections.abc import Callable, MutableSequence, Sequence
+from pathlib import Path
 from textwrap import dedent
-from typing import Any, Callable, Dict, List, MutableSequence, Optional, Sequence
+from typing import Any
 
 import optuna
 from hydra._internal.deprecation_warning import deprecation_warning
@@ -40,19 +44,21 @@ class OptunaSweeperImpl(Sweeper):
         self,
         sampler: Any,
         direction: Any,
-        storage: Optional[str],
-        study_name: Optional[str],
+        storage: str | None,
+        study_name: str | None,
         n_trials: int,
         n_jobs: int,
         max_failure_rate: float,
-        search_space: Optional[DictConfig],
-        custom_search_space: Optional[str],
-        params: Optional[DictConfig],
+        search_space: DictConfig | None,
+        custom_search_space: str | None,
+        params: DictConfig | None,
         # New parameters
-        pruner: Optional[Any] = None,
+        pruner: Any | None = None,
         enable_pruning: bool = False,
-        dashboard: Optional[DictConfig] = None,
-        callbacks: Optional[List[Any]] = None,
+        dashboard: DictConfig | None = None,
+        callbacks: list[Any] | None = None,
+        enqueue: list[Any] | None = None,
+        results_top_n: int = 5,
     ) -> None:
         self.sampler = sampler
         self.direction = direction
@@ -62,28 +68,28 @@ class OptunaSweeperImpl(Sweeper):
         self.n_jobs = n_jobs
         self.max_failure_rate = max_failure_rate
         assert 0.0 <= self.max_failure_rate <= 1.0
-        self.custom_search_space_extender: Optional[
-            Callable[[DictConfig, Trial], None]
-        ] = None
+        self.custom_search_space_extender: Callable[[DictConfig, Trial], None] | None = None
         if custom_search_space:
             self.custom_search_space_extender = get_method(custom_search_space)
         self.search_space = search_space
         self.params = params
         self.job_idx: int = 0
-        self.search_space_distributions: Optional[Dict[str, BaseDistribution]] = None
+        self.search_space_distributions: dict[str, BaseDistribution] | None = None
 
         # New fields
         self.pruner = pruner
         self.enable_pruning = enable_pruning
         self.dashboard_config = dashboard
         self.callbacks_config = callbacks
+        self.enqueue = enqueue
+        self.results_top_n = results_top_n
 
         # Raw (un-instantiated) pruner config, captured in setup(). Remote workers
         # rebuild the pruner from this; the instantiated object in self.pruner
         # cannot be turned back into a config.
-        self.pruner_config: Optional[Dict[str, Any]] = None
+        self.pruner_config: dict[str, Any] | None = None
 
-        self.task_function: Optional[TaskFunction] = None
+        self.task_function: TaskFunction | None = None
 
     def _process_searchspace_config(self) -> None:
         url = "https://hydra.cc/docs/upgrades/1.1_to_1.2/changes_to_sweeper_config/"
@@ -94,13 +100,15 @@ class OptunaSweeperImpl(Sweeper):
                 warnings.warn(
                     "Both hydra.sweeper.params and hydra.sweeper.search_space are configured."
                     "\nHydra will use hydra.sweeper.params for defining search space."
-                    f"\n{url}"
+                    f"\n{url}",
+                    stacklevel=2,
                 )
             else:
                 deprecation_warning(
                     message=dedent(
                         f"""\
-                        `hydra.sweeper.search_space` is deprecated and will be removed in a future release.
+                        `hydra.sweeper.search_space` is deprecated and will be
+                        removed in a future release.
                         Please configure with `hydra.sweeper.params`.
                         {url}
                         """
@@ -133,7 +141,7 @@ class OptunaSweeperImpl(Sweeper):
         if pruner_node is not None:
             self.pruner_config = OmegaConf.to_container(pruner_node, resolve=True)
 
-    def _get_directions(self) -> List[str]:
+    def _get_directions(self) -> list[str]:
         if isinstance(self.direction, MutableSequence):
             return [d.name if isinstance(d, Direction) else d for d in self.direction]
         elif isinstance(self.direction, str):
@@ -142,9 +150,9 @@ class OptunaSweeperImpl(Sweeper):
 
     def _configure_trials(
         self,
-        trials: List[Trial],
-        search_space_distributions: Dict[str, BaseDistribution],
-        fixed_params: Dict[str, Any],
+        trials: list[Trial],
+        search_space_distributions: dict[str, BaseDistribution],
+        fixed_params: dict[str, Any],
     ) -> Sequence[Sequence[str]]:
         overrides = []
         for trial in trials:
@@ -170,7 +178,7 @@ class OptunaSweeperImpl(Sweeper):
             overrides.append(tuple(f"{name}={val}" for name, val in params.items()))
         return overrides
 
-    def _parse_sweeper_params_config(self) -> List[str]:
+    def _parse_sweeper_params_config(self) -> list[str]:
         if not self.params:
             return []
         return [f"{k!s}={v}" for k, v in self.params.items()]
@@ -190,7 +198,7 @@ class OptunaSweeperImpl(Sweeper):
         else:
             raise ValueError("GridSampler only supports discrete distributions.")
 
-    def _build_callbacks(self) -> List[Callable]:
+    def _build_callbacks(self) -> list[Callable]:
         """Get or instantiate Optuna study callbacks from config."""
         if not self.callbacks_config:
             return []
@@ -206,7 +214,7 @@ class OptunaSweeperImpl(Sweeper):
                 callbacks.append(instantiate(cb_conf))
         return callbacks
 
-    def _create_pruner(self) -> Optional[optuna.pruners.BasePruner]:
+    def _create_pruner(self) -> optuna.pruners.BasePruner | None:
         """Get or instantiate pruner from config."""
         if self.pruner is None:
             return None
@@ -233,9 +241,7 @@ class OptunaSweeperImpl(Sweeper):
             return None
 
         if self.storage is None:
-            log.warning(
-                "Dashboard requires storage to be configured. Skipping dashboard launch."
-            )
+            log.warning("Dashboard requires storage to be configured. Skipping dashboard launch.")
             return None
 
         from ._dashboard import DashboardManager
@@ -270,14 +276,50 @@ class OptunaSweeperImpl(Sweeper):
             return
         study.set_user_attr(PRUNER_USER_ATTR, json.dumps(self.pruner_config))
 
+    def _ensure_storage_dir(self) -> None:
+        """Create the directory a SQLite storage lives in.
+
+        SQLite refuses to create missing directories, and the common case of
+        putting the database under ``hydra.sweep.dir`` fails because the launcher
+        only creates that directory later, when the first batch is launched.
+        """
+        prefix = "sqlite:///"
+        url = str(self.storage or "")
+        if not url.startswith(prefix):
+            return
+        path = url[len(prefix) :]
+        if not path or path.startswith(":"):  # :memory:
+            return
+        parent = Path(path).expanduser().parent
+        if str(parent) and not parent.exists():
+            parent.mkdir(parents=True, exist_ok=True)
+            log.info(f"Created storage directory: {parent}")
+
+    def _enqueue_initial_trials(self, study: optuna.Study) -> None:
+        """Seed the study with known-good parameter sets before sampling starts.
+
+        Entries may be partial: unspecified parameters are still sampled.
+        """
+        if not self.enqueue:
+            return
+
+        for entry in self.enqueue:
+            params = (
+                OmegaConf.to_container(entry, resolve=True)
+                if isinstance(entry, DictConfig)
+                else dict(entry)
+            )
+            # skip_if_exists keeps a resumed study from re-running the same points
+            # on every restart.
+            study.enqueue_trial(params, skip_if_exists=True)
+        log.info(f"Enqueued {len(self.enqueue)} warm-start trial(s).")
+
     def _warn_about_batched_sampling(self) -> None:
         """``n_jobs`` is the ask/tell batch size, not the launcher's parallelism:
         every trial in a batch is sampled before any of them reports back."""
         sampler_conf = OmegaConf.select(self.config, "hydra.sweeper.sampler")
         target = str(sampler_conf.get("_target_", "")) if sampler_conf else ""
-        if target.endswith("TPESampler") and not sampler_conf.get(
-            "constant_liar", False
-        ):
+        if target.endswith("TPESampler") and not sampler_conf.get("constant_liar", False):
             log.warning(
                 f"n_jobs={self.n_jobs} asks for {self.n_jobs} trials before any of "
                 "them reports back, so TPESampler draws the whole batch from the "
@@ -294,14 +336,14 @@ class OptunaSweeperImpl(Sweeper):
 
     def _inject_trial_env(
         self,
-        trials: List[Trial],
+        trials: list[Trial],
         overrides: Sequence[Sequence[str]],
         study: optuna.Study,
     ) -> Sequence[Sequence[str]]:
         """Pass the trial identity to each job through ``hydra.job.env_set`` so
         remote workers can reconstruct the Trial from shared storage."""
         enriched = []
-        for trial, trial_overrides in zip(trials, overrides):
+        for trial, trial_overrides in zip(trials, overrides, strict=True):
             enriched.append(
                 tuple(trial_overrides)
                 + (
@@ -312,25 +354,22 @@ class OptunaSweeperImpl(Sweeper):
             )
         return enriched
 
-    def _parse_return_value(
-        self, ret_value: Any, directions: List[str]
-    ) -> List[float]:
+    def _parse_return_value(self, ret_value: Any, directions: list[str]) -> list[float]:
         """Coerce a job's return value into the list of objective values."""
         if len(directions) == 1:
             try:
                 return [float(ret_value)]
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
                 raise ValueError(
                     f"Return value must be float-castable. Got '{ret_value}'."
-                ).with_traceback(sys.exc_info()[2])
+                ).with_traceback(sys.exc_info()[2]) from e
 
         try:
             values = [float(v) for v in ret_value]
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
             raise ValueError(
-                "Return value must be a list or tuple of float-castable values."
-                f" Got '{ret_value}'."
-            ).with_traceback(sys.exc_info()[2])
+                f"Return value must be a list or tuple of float-castable values. Got '{ret_value}'."
+            ).with_traceback(sys.exc_info()[2]) from e
         if len(values) != len(directions):
             raise ValueError(
                 "The number of the values and the number of the objectives are"
@@ -338,14 +377,85 @@ class OptunaSweeperImpl(Sweeper):
             )
         return values
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total = int(seconds)
+        hours, rem = divmod(total, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours}h {minutes}m"
+        if minutes:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
+
+    def _build_results(
+        self, study: optuna.Study, directions: list[str], elapsed: float
+    ) -> dict[str, Any]:
+        """Assemble optimization_results.yaml and log the summary.
+
+        `name`, `best_params`/`best_value` (or `solutions`) keep their original
+        shape; everything else is additive.
+        """
+        trials = study.get_trials(deepcopy=False)
+        states = Counter(t.state.name.lower() for t in trials)
+
+        results: dict[str, Any] = {"name": "optuna"}
+
+        if len(directions) < 2:
+            try:
+                best_trial = study.best_trial
+                results["best_params"] = best_trial.params
+                results["best_value"] = best_trial.value
+                log.info(f"Best parameters: {best_trial.params}")
+                log.info(f"Best value: {best_trial.value}")
+            except ValueError:
+                results["best_params"] = {}
+                results["best_value"] = None
+                log.warning("No completed trials found.")
+
+            if self.results_top_n > 0:
+                complete = [
+                    t
+                    for t in trials
+                    if t.state == optuna.trial.TrialState.COMPLETE and t.value is not None
+                ]
+                complete.sort(key=lambda t: t.value, reverse=directions[0] == "maximize")
+                results["top"] = [
+                    {"number": t.number, "value": t.value, "params": t.params}
+                    for t in complete[: self.results_top_n]
+                ]
+        else:
+            best_trials = study.best_trials
+            results["solutions"] = [{"params": t.params, "values": t.values} for t in best_trials]
+            log.info(f"Number of Pareto solutions: {len(best_trials)}")
+            for t in best_trials:
+                log.info(f"    Values: {t.values}, Params: {t.params}")
+
+        results["study_name"] = study.study_name
+        results["trials"] = {"total": len(trials), **dict(sorted(states.items()))}
+        results["elapsed"] = self._format_duration(elapsed)
+
+        # Only present when workers recorded their own timings (pruning mode with
+        # storage); the controller's datetime_* would include the batch barrier.
+        worker_seconds = sum(
+            t.user_attrs["worker_end"] - t.user_attrs["worker_start"]
+            for t in trials
+            if "worker_start" in t.user_attrs and "worker_end" in t.user_attrs
+        )
+        if worker_seconds:
+            results["worker_time"] = self._format_duration(worker_seconds)
+
+        log.info(f"Trials: {dict(sorted(states.items()))} in {results['elapsed']}")
+        return results
+
     def _sweep(
         self,
         study: optuna.Study,
-        search_space_distributions: Dict[str, BaseDistribution],
-        fixed_params: Dict[str, Any],
-        directions: List[str],
+        search_space_distributions: dict[str, BaseDistribution],
+        fixed_params: dict[str, Any],
+        directions: list[str],
         is_grid_sampler: bool,
-        callbacks: List[Callable],
+        callbacks: list[Callable],
     ) -> None:
         """Batched ask/tell sweep loop, shared by the plain and pruning modes.
 
@@ -362,8 +472,7 @@ class OptunaSweeperImpl(Sweeper):
         use_thread_local = self.enable_pruning and self.storage is None
         if use_thread_local and batch_size > 1:
             log.warning(
-                "Pruning with n_jobs > 1 requires persistent storage. "
-                "Falling back to n_jobs=1."
+                "Pruning with n_jobs > 1 requires persistent storage. Falling back to n_jobs=1."
             )
             batch_size = 1
 
@@ -371,25 +480,21 @@ class OptunaSweeperImpl(Sweeper):
             batch_size = min(n_trials_to_go, batch_size)
 
             trials = [study.ask() for _ in range(batch_size)]
-            overrides = self._configure_trials(
-                trials, search_space_distributions, fixed_params
-            )
+            overrides = self._configure_trials(trials, search_space_distributions, fixed_params)
             if self.enable_pruning:
                 overrides = self._inject_trial_env(trials, overrides, study)
 
             if use_thread_local:
                 set_current_trial(trials[0])
             try:
-                returns = self.launcher.launch(
-                    overrides, initial_job_idx=self.job_idx
-                )
+                returns = self.launcher.launch(overrides, initial_job_idx=self.job_idx)
             finally:
                 if use_thread_local:
                     clear_current_trial()
             self.job_idx += len(returns)
 
             failures = []
-            for trial, ret in zip(trials, returns):
+            for trial, ret in zip(trials, returns, strict=True):
                 try:
                     values = self._parse_return_value(ret.return_value, directions)
                 except optuna.TrialPruned:
@@ -409,8 +514,7 @@ class OptunaSweeperImpl(Sweeper):
                         )
                     except RuntimeError as e:
                         if not (
-                            is_grid_sampler
-                            and "`Study.stop` is supposed to be invoked" in str(e)
+                            is_grid_sampler and "`Study.stop` is supposed to be invoked" in str(e)
                         ):
                             raise
 
@@ -431,11 +535,11 @@ class OptunaSweeperImpl(Sweeper):
                 )
                 assert len(failures) > 0
                 for ret in returns:
-                    ret.return_value  # delegate raising to JobReturn
+                    ret.return_value  # noqa: B018 - access re-raises via JobReturn
 
             n_trials_to_go -= batch_size
 
-    def sweep(self, arguments: List[str]) -> None:
+    def sweep(self, arguments: list[str]) -> None:
         assert self.config is not None
         assert self.launcher is not None
         assert self.hydra_context is not None
@@ -454,7 +558,7 @@ class OptunaSweeperImpl(Sweeper):
             fixed_params,
         ) = create_params_from_overrides(params_conf)
 
-        search_space_distributions: Dict[str, BaseDistribution] = {}
+        search_space_distributions: dict[str, BaseDistribution] = {}
         if self.search_space_distributions:
             search_space_distributions = self.search_space_distributions.copy()
         search_space_distributions.update(override_search_space_distributions)
@@ -469,9 +573,7 @@ class OptunaSweeperImpl(Sweeper):
             for v in search_space_for_grid_sampler.values():
                 n_trial *= len(v)
             self.n_trials = min(self.n_trials, n_trial)
-            log.info(
-                f"Updating num of trials to {self.n_trials} due to using GridSampler."
-            )
+            log.info(f"Updating num of trials to {self.n_trials} due to using GridSampler.")
 
         # Remove fixed parameters from Optuna search space
         for param_name in fixed_params:
@@ -487,6 +589,8 @@ class OptunaSweeperImpl(Sweeper):
                 "NotImplementedError when more than one direction is configured. "
                 "Use a single direction or set enable_pruning=false."
             )
+
+        self._ensure_storage_dir()
 
         # Create pruner
         pruner = self._create_pruner()
@@ -522,12 +626,15 @@ class OptunaSweeperImpl(Sweeper):
         if self.n_jobs > 1:
             self._warn_about_batched_sampling()
 
+        self._enqueue_initial_trials(study)
+
         # Build callbacks
         callbacks = self._build_callbacks()
 
         # Start dashboard
         dashboard_manager = self._start_dashboard()
 
+        started_at = time.monotonic()
         try:
             self._sweep(
                 study=study,
@@ -541,33 +648,7 @@ class OptunaSweeperImpl(Sweeper):
             if dashboard_manager is not None:
                 dashboard_manager.stop()
 
-        # Log and save results
-        results_to_serialize: Dict[str, Any]
-        if len(directions) < 2:
-            try:
-                best_trial = study.best_trial
-                results_to_serialize = {
-                    "name": "optuna",
-                    "best_params": best_trial.params,
-                    "best_value": best_trial.value,
-                }
-                log.info(f"Best parameters: {best_trial.params}")
-                log.info(f"Best value: {best_trial.value}")
-            except ValueError:
-                results_to_serialize = {"name": "optuna", "best_params": {}, "best_value": None}
-                log.warning("No completed trials found.")
-        else:
-            best_trials = study.best_trials
-            pareto_front = [
-                {"params": t.params, "values": t.values} for t in best_trials
-            ]
-            results_to_serialize = {
-                "name": "optuna",
-                "solutions": pareto_front,
-            }
-            log.info(f"Number of Pareto solutions: {len(best_trials)}")
-            for t in best_trials:
-                log.info(f"    Values: {t.values}, Params: {t.params}")
+        results_to_serialize = self._build_results(study, directions, time.monotonic() - started_at)
 
         OmegaConf.save(
             OmegaConf.create(results_to_serialize),

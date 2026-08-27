@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING
@@ -25,11 +25,11 @@ class DistributionType(Enum):
 @dataclass
 class DistributionConfig:
     type: DistributionType = MISSING
-    low: Optional[float] = None
-    high: Optional[float] = None
+    low: float | None = None
+    high: float | None = None
     log: bool = False
-    step: Optional[float] = None
-    choices: Optional[List[Any]] = None
+    step: float | None = None
+    choices: list[Any] | None = None
 
 
 # ============================================================
@@ -44,36 +44,36 @@ class SamplerConfig:
 
 @dataclass
 class TPESamplerConfig(SamplerConfig):
+    # consider_prior, prior_weight, consider_magic_clip, consider_endpoints and
+    # warn_independent_sampling are deprecated in Optuna 4.9 (removed in 6.0), so
+    # they are deliberately absent: listing them here would force them into every
+    # TPESampler this plugin builds and emit a FutureWarning per run.
     _target_: str = "optuna.samplers.TPESampler"
-    consider_prior: bool = True
-    prior_weight: float = 1.0
-    consider_magic_clip: bool = True
-    consider_endpoints: bool = False
     n_startup_trials: int = 10
     n_ei_candidates: int = 24
-    seed: Optional[int] = None
+    seed: int | None = None
     multivariate: bool = False
     group: bool = False
-    warn_independent_sampling: bool = True
     constant_liar: bool = False
 
 
 @dataclass
 class RandomSamplerConfig(SamplerConfig):
     _target_: str = "optuna.samplers.RandomSampler"
-    seed: Optional[int] = None
+    seed: int | None = None
 
 
 @dataclass
 class CmaEsSamplerConfig(SamplerConfig):
+    # sigma0 and x0 are deprecated in Optuna 4.9 (removed in 6.0) — see the note
+    # on TPESamplerConfig.
     _target_: str = "optuna.samplers.CmaEsSampler"
-    sigma0: Optional[float] = None
     n_startup_trials: int = 1
     warn_independent_sampling: bool = True
-    seed: Optional[int] = None
+    seed: int | None = None
     consider_pruned_trials: bool = False
-    restart_strategy: Optional[str] = None
-    popsize: Optional[int] = None
+    restart_strategy: str | None = None
+    popsize: int | None = None
     inc_popsize: int = -1
     use_separable_cma: bool = False
     with_margin: bool = False
@@ -84,27 +84,27 @@ class CmaEsSamplerConfig(SamplerConfig):
 class NSGAIISamplerConfig(SamplerConfig):
     _target_: str = "optuna.samplers.NSGAIISampler"
     population_size: int = 50
-    mutation_prob: Optional[float] = None
+    mutation_prob: float | None = None
     crossover_prob: float = 0.9
     swapping_prob: float = 0.5
-    seed: Optional[int] = None
+    seed: int | None = None
 
 
 @dataclass
 class NSGAIIISamplerConfig(SamplerConfig):
     _target_: str = "optuna.samplers.NSGAIIISampler"
     population_size: int = 50
-    mutation_prob: Optional[float] = None
+    mutation_prob: float | None = None
     crossover_prob: float = 0.9
     swapping_prob: float = 0.5
-    seed: Optional[int] = None
+    seed: int | None = None
     dividing_parameter: int = 3
 
 
 @dataclass
 class GPSamplerConfig(SamplerConfig):
     _target_: str = "optuna.samplers.GPSampler"
-    seed: Optional[int] = None
+    seed: int | None = None
     n_startup_trials: int = 10
     deterministic_objective: bool = False
     warn_independent_sampling: bool = True
@@ -115,7 +115,7 @@ class QMCSamplerConfig(SamplerConfig):
     _target_: str = "optuna.samplers.QMCSampler"
     qmc_type: str = "sobol"
     scramble: bool = False
-    seed: Optional[int] = None
+    seed: int | None = None
     warn_asynchronous_seeding: bool = True
     warn_independent_sampling: bool = True
 
@@ -126,13 +126,13 @@ class GridSamplerConfig(SamplerConfig):
     # GridSampler takes `search_space` positionally; the sweeper builds it from
     # the params config and calls the partial in `sweep()`.
     _partial_: bool = True
-    seed: Optional[int] = None
+    seed: int | None = None
 
 
 @dataclass
 class BruteForceSamplerConfig(SamplerConfig):
     _target_: str = "optuna.samplers.BruteForceSampler"
-    seed: Optional[int] = None
+    seed: int | None = None
     avoid_premature_stop: bool = False
 
 
@@ -177,8 +177,8 @@ class PercentilePrunerConfig(PrunerConfig):
 @dataclass
 class ThresholdPrunerConfig(PrunerConfig):
     _target_: str = "optuna.pruners.ThresholdPruner"
-    lower: Optional[float] = None
-    upper: Optional[float] = None
+    lower: float | None = None
+    upper: float | None = None
     n_warmup_steps: int = 0
     interval_steps: int = 1
 
@@ -186,7 +186,7 @@ class ThresholdPrunerConfig(PrunerConfig):
 @dataclass
 class PatientPrunerConfig(PrunerConfig):
     _target_: str = "optuna.pruners.PatientPruner"
-    wrapped_pruner: Optional[Any] = None
+    wrapped_pruner: Any | None = None
     patience: int = 10
     min_delta: float = 0.0
 
@@ -224,34 +224,38 @@ class DashboardConfig:
 
 @dataclass
 class OptunaSweeperConf:
-    _target_: str = (
-        "hydra_plugins.hydra_optuna_sweeper_reborn.optuna_sweeper.OptunaSweeper"
-    )
+    _target_: str = "hydra_plugins.hydra_optuna_sweeper_reborn.optuna_sweeper.OptunaSweeper"
     # `_self_` first so that the sampler/pruner groups override the fields below.
     # Without it Hydra applies `_self_` last and the `pruner: None` field silently
     # wipes out whatever `override /hydra/sweeper/pruner: <name>` selected.
-    defaults: List[Any] = field(
+    defaults: list[Any] = field(
         default_factory=lambda: ["_self_", {"sampler": "tpe"}, {"pruner": None}]
     )
 
     sampler: Any = MISSING
-    pruner: Optional[Any] = None
+    pruner: Any | None = None
     direction: Any = Direction.minimize
-    storage: Optional[str] = None
-    study_name: Optional[str] = None
+    storage: str | None = None
+    study_name: str | None = None
     n_trials: int = 20
     n_jobs: int = 2
     max_failure_rate: float = 0.0
 
     # Parameter space
-    params: Optional[Dict[str, str]] = None
-    search_space: Optional[Dict[str, Any]] = None  # deprecated, backward compat
-    custom_search_space: Optional[str] = None
+    params: dict[str, str] | None = None
+    search_space: dict[str, Any] | None = None  # deprecated, backward compat
+    custom_search_space: str | None = None
 
     # New features
     enable_pruning: bool = False
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
-    callbacks: Optional[List[Any]] = None
+    callbacks: list[Any] | None = None
+
+    # Warm start: parameter sets to try before sampling kicks in. Re-queuing is
+    # skipped for points a resumed study already holds.
+    enqueue: list[dict[str, Any]] | None = None
+    # How many best trials to list in optimization_results.yaml (0 = only best).
+    results_top_n: int = 5
 
 
 # ============================================================

@@ -1,6 +1,5 @@
 import logging
 import subprocess
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -10,7 +9,7 @@ class DashboardManager:
         self.storage = storage
         self.host = host
         self.port = port
-        self._process: Optional[subprocess.Popen] = None
+        self._process: subprocess.Popen | None = None
 
     def start(self) -> None:
         try:
@@ -36,13 +35,10 @@ class DashboardManager:
                 )
                 self._process = None
                 return
-            log.info(
-                f"Optuna Dashboard started at http://{self.host}:{self.port}/"
-            )
+            log.info(f"Optuna Dashboard started at http://{self.host}:{self.port}/")
         except FileNotFoundError:
             log.warning(
-                "optuna-dashboard is not installed. "
-                "Install it with: pip install optuna-dashboard"
+                "optuna-dashboard is not installed. Install it with: pip install optuna-dashboard"
             )
 
     def stop(self) -> None:

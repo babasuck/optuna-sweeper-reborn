@@ -21,9 +21,7 @@ def make_job_return(value):
     ``optuna.TrialPruned``); anything else is a normal return value.
     """
     if isinstance(value, BaseException):
-        return JobReturn(
-            overrides=[], status=JobStatus.FAILED, _return_value=value
-        )
+        return JobReturn(overrides=[], status=JobStatus.FAILED, _return_value=value)
     return JobReturn(overrides=[], status=JobStatus.COMPLETED, _return_value=value)
 
 
@@ -52,8 +50,18 @@ class FakeLauncher:
 def make_sweeper():
     """Build an OptunaSweeperImpl wired to a FakeLauncher, bypassing Hydra setup."""
 
-    def _make(results, *, n_trials, n_jobs=1, directions="minimize",
-              max_failure_rate=0.0, enable_pruning=False, sweeper_cfg=None):
+    def _make(
+        results,
+        *,
+        n_trials,
+        n_jobs=1,
+        directions="minimize",
+        max_failure_rate=0.0,
+        enable_pruning=False,
+        sweeper_cfg=None,
+        enqueue=None,
+        results_top_n=5,
+    ):
         sweeper = OptunaSweeperImpl(
             sampler=None,
             direction=directions,
@@ -66,6 +74,8 @@ def make_sweeper():
             custom_search_space=None,
             params=None,
             enable_pruning=enable_pruning,
+            enqueue=enqueue,
+            results_top_n=results_top_n,
         )
         sweeper.launcher = FakeLauncher(results)
         sweeper.config = OmegaConf.create(

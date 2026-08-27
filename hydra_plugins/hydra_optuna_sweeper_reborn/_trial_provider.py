@@ -3,7 +3,6 @@ import logging
 import os
 import threading
 import time
-from typing import Optional
 
 import optuna
 from optuna.pruners import BasePruner
@@ -15,8 +14,8 @@ from optuna.trial import Trial
 PRUNER_USER_ATTR = "_reborn_pruner"
 
 _thread_local = threading.local()
-_remote_trial_cache: Optional[Trial] = None
-_remote_trial_cache_key: Optional[tuple[str, str, str]] = None
+_remote_trial_cache: Trial | None = None
+_remote_trial_cache_key: tuple[str, str, str] | None = None
 
 log = logging.getLogger(__name__)
 
@@ -38,12 +37,12 @@ class _TimedTrial(Trial):
         return result
 
 
-def set_current_trial(trial: Optional[Trial]) -> None:
+def set_current_trial(trial: Trial | None) -> None:
     """Set the current Optuna trial for this thread. Called by the sweeper."""
     _thread_local.current_trial = trial
 
 
-def _load_pruner(study: optuna.Study) -> Optional[BasePruner]:
+def _load_pruner(study: optuna.Study) -> BasePruner | None:
     """Rebuild the sweeper's configured pruner from the study's user attributes."""
     payload = study.user_attrs.get(PRUNER_USER_ATTR)
     if not payload:
@@ -58,7 +57,7 @@ def _load_pruner(study: optuna.Study) -> Optional[BasePruner]:
     return pruner
 
 
-def get_current_trial() -> Optional[Trial]:
+def get_current_trial() -> Trial | None:
     """Get the current Optuna trial for this thread.
 
     Returns None if no trial is active (e.g., not running under the sweeper

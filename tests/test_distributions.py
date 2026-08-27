@@ -67,9 +67,7 @@ class TestCreateFromOverrides:
         assert isinstance(dists["x"], (IntDistribution, FloatDistribution))
 
     def test_interval_log(self):
-        dists, fixed = create_params_from_overrides(
-            ["x=tag(log, interval(0.001, 1.0))"]
-        )
+        dists, fixed = create_params_from_overrides(["x=tag(log, interval(0.001, 1.0))"])
         assert "x" in dists
         assert isinstance(dists["x"], FloatDistribution)
         assert dists["x"].log is True

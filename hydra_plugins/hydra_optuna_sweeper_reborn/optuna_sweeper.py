@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any
 
 from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext, TaskFunction
@@ -14,19 +14,21 @@ class OptunaSweeper(Sweeper):
         self,
         sampler: SamplerConfig,
         direction: Any,
-        storage: Optional[str],
-        study_name: Optional[str],
+        storage: str | None,
+        study_name: str | None,
         n_trials: int,
         n_jobs: int,
         max_failure_rate: float,
-        search_space: Optional[DictConfig],
-        custom_search_space: Optional[str],
-        params: Optional[DictConfig],
+        search_space: DictConfig | None,
+        custom_search_space: str | None,
+        params: DictConfig | None,
         # New parameters
-        pruner: Optional[Any] = None,
+        pruner: Any | None = None,
         enable_pruning: bool = False,
-        dashboard: Optional[DictConfig] = None,
-        callbacks: Optional[List[Any]] = None,
+        dashboard: DictConfig | None = None,
+        callbacks: list[Any] | None = None,
+        enqueue: list[Any] | None = None,
+        results_top_n: int = 5,
     ) -> None:
         from ._impl import OptunaSweeperImpl
 
@@ -45,6 +47,8 @@ class OptunaSweeper(Sweeper):
             enable_pruning=enable_pruning,
             dashboard=dashboard,
             callbacks=callbacks,
+            enqueue=enqueue,
+            results_top_n=results_top_n,
         )
 
     def setup(
@@ -54,9 +58,7 @@ class OptunaSweeper(Sweeper):
         task_function: TaskFunction,
         config: DictConfig,
     ) -> None:
-        self.sweeper.setup(
-            hydra_context=hydra_context, task_function=task_function, config=config
-        )
+        self.sweeper.setup(hydra_context=hydra_context, task_function=task_function, config=config)
 
-    def sweep(self, arguments: List[str]) -> None:
+    def sweep(self, arguments: list[str]) -> None:
         return self.sweeper.sweep(arguments)

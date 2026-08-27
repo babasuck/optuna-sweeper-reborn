@@ -1,4 +1,6 @@
+import pytest
 from hydra.core.config_store import ConfigStore
+
 from hydra_plugins.hydra_optuna_sweeper_reborn.config import (
     BruteForceSamplerConfig,
     CmaEsSamplerConfig,
@@ -11,16 +13,16 @@ from hydra_plugins.hydra_optuna_sweeper_reborn.config import (
     HyperbandPrunerConfig,
     MedianPrunerConfig,
     NopPrunerConfig,
-    NSGAIISamplerConfig,
     NSGAIIISamplerConfig,
+    NSGAIISamplerConfig,
     OptunaSweeperConf,
     PatientPrunerConfig,
     PercentilePrunerConfig,
     QMCSamplerConfig,
     RandomSamplerConfig,
     SuccessiveHalvingPrunerConfig,
-    TPESamplerConfig,
     ThresholdPrunerConfig,
+    TPESamplerConfig,
 )
 
 
@@ -121,9 +123,7 @@ class TestMainConfig:
         assert Direction.maximize.name == "maximize"
 
     def test_distribution_config(self):
-        cfg = DistributionConfig(
-            type=DistributionType.float, low=0.0, high=1.0, log=True
-        )
+        cfg = DistributionConfig(type=DistributionType.float, low=0.0, high=1.0, log=True)
         assert cfg.type == DistributionType.float
         assert cfg.log is True
 
@@ -144,9 +144,15 @@ class TestConfigStore:
         cs = ConfigStore.instance()
         items = cs.list("hydra/sweeper/sampler")
         expected = [
-            "tpe.yaml", "random.yaml", "cmaes.yaml",
-            "nsgaii.yaml", "nsgaiii.yaml", "gp.yaml",
-            "qmc.yaml", "grid.yaml", "bruteforce.yaml",
+            "tpe.yaml",
+            "random.yaml",
+            "cmaes.yaml",
+            "nsgaii.yaml",
+            "nsgaiii.yaml",
+            "gp.yaml",
+            "qmc.yaml",
+            "grid.yaml",
+            "bruteforce.yaml",
         ]
         for name in expected:
             assert name in items, f"{name} not registered"
@@ -155,8 +161,12 @@ class TestConfigStore:
         cs = ConfigStore.instance()
         items = cs.list("hydra/sweeper/pruner")
         expected = [
-            "median.yaml", "hyperband.yaml", "percentile.yaml",
-            "threshold.yaml", "patient.yaml", "successive_halving.yaml",
+            "median.yaml",
+            "hyperband.yaml",
+            "percentile.yaml",
+            "threshold.yaml",
+            "patient.yaml",
+            "successive_halving.yaml",
             "nop.yaml",
         ]
         for name in expected:
@@ -181,9 +191,7 @@ class TestGroupComposition:
             "      x: interval(-1.0, 1.0)\n"
         )
         with initialize_config_dir(config_dir=str(tmp_path), version_base="1.3"):
-            return compose(
-                config_name="config", return_hydra_config=True, overrides=overrides
-            )
+            return compose(config_name="config", return_hydra_config=True, overrides=overrides)
 
     def test_pruner_group_override_composes(self, tmp_path):
         """`override /hydra/sweeper/pruner: median` used to fail with
@@ -211,3 +219,55 @@ class TestGroupComposition:
         sampler = instantiate(OmegaConf.structured(GridSamplerConfig()))
         assert isinstance(sampler, functools.partial)
         assert isinstance(sampler({"x": [1, 2, 3]}), optuna.samplers.GridSampler)
+
+
+class TestNoDeprecatedSamplerArguments:
+    """Our sampler configs must not force arguments Optuna has deprecated.
+
+    Fields listed in a structured config are passed on every instantiation, even
+    when the user never touched them — which produced a FutureWarning per run on
+    Optuna 4.9 and would become a TypeError in 6.0.
+    """
+
+    SAMPLERS = [
+        TPESamplerConfig,
+        RandomSamplerConfig,
+        CmaEsSamplerConfig,
+        NSGAIISamplerConfig,
+        NSGAIIISamplerConfig,
+        GPSamplerConfig,
+        QMCSamplerConfig,
+        BruteForceSamplerConfig,
+    ]
+
+    @pytest.mark.parametrize("cfg_cls", SAMPLERS, ids=lambda c: c.__name__)
+    def test_instantiation_emits_no_deprecation(self, cfg_cls):
+        import warnings
+
+        from hydra.utils import instantiate
+        from omegaconf import OmegaConf
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            instantiate(OmegaConf.structured(cfg_cls()))
+
+        offenders = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, (DeprecationWarning, FutureWarning))
+        ]
+        assert not offenders, offenders
+
+    @pytest.mark.parametrize("cfg_cls", SAMPLERS, ids=lambda c: c.__name__)
+    def test_every_field_exists_in_the_optuna_signature(self, cfg_cls):
+        """Catches arguments Optuna renamed or dropped outright."""
+        import inspect
+        from dataclasses import fields
+
+        import optuna
+
+        target = cfg_cls()._target_.rsplit(".", 1)[-1]
+        accepted = inspect.signature(getattr(optuna.samplers, target).__init__).parameters
+        ours = {f.name for f in fields(cfg_cls)} - {"_target_", "_partial_"}
+
+        assert ours <= set(accepted), sorted(ours - set(accepted))

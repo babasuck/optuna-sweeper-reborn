@@ -12,7 +12,6 @@ from hydra_plugins.hydra_optuna_sweeper_reborn._trial_provider import (
     set_current_trial,
 )
 
-
 REMOTE_ENV_VARS = (
     "OPTUNA_TRIAL_ID",
     "OPTUNA_STUDY_NAME",
@@ -203,9 +202,7 @@ class TestTrialProviderEnvVarFallback:
         # is involved at any point.
         assert "OPTUNA_PRUNER" not in os.environ
         assert isinstance(reconstructed.study.pruner, optuna.pruners.PatientPruner)
-        assert isinstance(
-            reconstructed.study.pruner._wrapped_pruner, optuna.pruners.MedianPruner
-        )
+        assert isinstance(reconstructed.study.pruner._wrapped_pruner, optuna.pruners.MedianPruner)
         assert reconstructed.study.pruner._wrapped_pruner._n_startup_trials == 9
 
     def test_worker_timings_recorded_on_remote_trial(self, tmp_path):

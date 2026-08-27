@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, List, MutableMapping, Tuple
+from collections.abc import MutableMapping
+from typing import Any
 
 from hydra.core.override_parser.overrides_parser import OverridesParser
 from hydra.core.override_parser.types import (
@@ -38,9 +39,7 @@ def create_optuna_distribution_from_config(
         assert param.low is not None
         assert param.high is not None
         step = int(param.step) if param.step is not None else 1
-        return IntDistribution(
-            int(param.low), int(param.high), log=param.log, step=step
-        )
+        return IntDistribution(int(param.low), int(param.high), log=param.log, step=step)
 
     if param.type == DistributionType.float:
         assert param.low is not None
@@ -59,14 +58,14 @@ def create_optuna_distribution_from_override(override: Override) -> Any:
         return override.get_value_element_as_str()
 
     value = override.value()
-    choices: List[CategoricalChoiceType] = []
+    choices: list[CategoricalChoiceType] = []
 
     if override.is_choice_sweep():
         assert isinstance(value, ChoiceSweep)
         for x in override.sweep_iterator(transformer=Transformer.encode):
-            assert isinstance(
-                x, (str, int, float, bool, type(None))
-            ), f"A choice sweep expects str, int, float, bool, or None type. Got {type(x)}."
+            assert isinstance(x, (str, int, float, bool, type(None))), (
+                f"A choice sweep expects str, int, float, bool, or None type. Got {type(x)}."
+            )
             choices.append(x)
         return CategoricalDistribution(choices)
 
@@ -76,9 +75,9 @@ def create_optuna_distribution_from_override(override: Override) -> Any:
         assert value.stop is not None
         if value.shuffle:
             for x in override.sweep_iterator(transformer=Transformer.encode):
-                assert isinstance(
-                    x, (str, int, float, bool, type(None))
-                ), f"A choice sweep expects str, int, float, bool, or None type. Got {type(x)}."
+                assert isinstance(x, (str, int, float, bool, type(None))), (
+                    f"A choice sweep expects str, int, float, bool, or None type. Got {type(x)}."
+                )
                 choices.append(x)
             return CategoricalDistribution(choices)
         if (
@@ -87,9 +86,7 @@ def create_optuna_distribution_from_override(override: Override) -> Any:
             or isinstance(value.step, float)
         ):
             return FloatDistribution(value.start, value.stop, step=value.step)
-        return IntDistribution(
-            int(value.start), int(value.stop), step=int(value.step)
-        )
+        return IntDistribution(int(value.start), int(value.stop), step=int(value.step))
 
     if override.is_interval_sweep():
         assert isinstance(value, IntervalSweep)
@@ -108,12 +105,12 @@ def create_optuna_distribution_from_override(override: Override) -> Any:
 
 
 def create_params_from_overrides(
-    arguments: List[str],
-) -> Tuple[Dict[str, BaseDistribution], Dict[str, Any]]:
+    arguments: list[str],
+) -> tuple[dict[str, BaseDistribution], dict[str, Any]]:
     parser = OverridesParser.create()
     parsed = parser.parse_overrides(arguments)
-    search_space_distributions: Dict[str, BaseDistribution] = {}
-    fixed_params: Dict[str, Any] = {}
+    search_space_distributions: dict[str, BaseDistribution] = {}
+    fixed_params: dict[str, Any] = {}
 
     for override in parsed:
         param_name = override.get_key_element()

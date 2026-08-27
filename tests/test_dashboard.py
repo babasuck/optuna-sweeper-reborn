@@ -6,9 +6,7 @@ from hydra_plugins.hydra_optuna_sweeper_reborn._dashboard import DashboardManage
 class TestDashboardManager:
     def test_start_with_missing_binary(self):
         """When optuna-dashboard is not installed, should log warning."""
-        manager = DashboardManager(
-            storage="sqlite:///test.db", host="localhost", port=9999
-        )
+        manager = DashboardManager(storage="sqlite:///test.db", host="localhost", port=9999)
         # FileNotFoundError is caught internally
         with patch(
             "hydra_plugins.hydra_optuna_sweeper_reborn._dashboard.subprocess.Popen",
@@ -18,9 +16,7 @@ class TestDashboardManager:
         assert manager._process is None
 
     def test_start_success(self):
-        manager = DashboardManager(
-            storage="sqlite:///test.db", host="localhost", port=9999
-        )
+        manager = DashboardManager(storage="sqlite:///test.db", host="localhost", port=9999)
         mock_process = MagicMock()
         mock_process.poll.return_value = None  # still running
         with patch(
@@ -33,9 +29,7 @@ class TestDashboardManager:
     def test_start_detects_immediate_exit(self):
         """A busy port makes optuna-dashboard die right away; we must not report
         it as started."""
-        manager = DashboardManager(
-            storage="sqlite:///test.db", host="localhost", port=9999
-        )
+        manager = DashboardManager(storage="sqlite:///test.db", host="localhost", port=9999)
         mock_process = MagicMock()
         mock_process.poll.return_value = 1
         with patch(
